@@ -4,7 +4,49 @@ var express   = require('express')
   , pkg       = require('./package.json')
   , dbs       = {}
   , app       = module.exports = express()
+  , pwd       = require('pwd')
+  , base64    = require('base64-js')
+  , EventEmitter = require('events').EventEmitter
+  , querystring = require('querystring')
   , Pouch     = module.exports.Pouch = require('pouchdb');
+
+var CouchConfig = function() {
+  var file = './.config.json';
+
+  var read_config = function() {
+    if (fs.exists(file)) {
+      return JSON.parse(fs.readFileSync(file));
+    }
+    return {};
+  }
+
+  var flush = function() {
+    fs.writeFileSync(file, JSON.stringify(config));
+  };
+
+  var config = read_config();
+
+  return {
+    get: function(section, key) {
+      if (config[section] && config[section][key]) {
+        return config[section][key];
+      } else {
+        return undefined;
+      }
+    },
+    set: function(section, key, value) {
+      var previous_value = undefined;
+      if (!config[section]) {
+        config[section] = {};
+      } else {
+        previous_value = config[section][key];
+      }
+      config[section][key] = value;
+      flush();
+      return previous_value;
+    }
+  }
+};
 
 function isPouchError(obj) {
   return obj.error && obj.error === true;
@@ -62,6 +104,48 @@ app.configure(function () {
     };
     next();
   });
+
+  // init config
+  app.couch_config = CouchConfig();
+
+  // auth!
+  app.use(function(req, res, next) {
+    req.isAdmin = false;
+    var header = req.headers.authorization;
+
+    if (!header) {
+      return next();
+    }
+
+    var scramble = header.split(' ')[1];
+    var auth = base64.toByteArray(scramble).toString();
+    var userpass = auth.split(':');
+    var user = auth[0];
+    var their_pass = auth[1];
+    var our_pass = app.couch_config.get('admins', 'admin');
+    if (!their_pass == our_pass) { // TODO: TIMING ATTACK
+      return res.send(401, {error: unauthorized});
+    }
+    req.isAdmin = true;
+    next();
+  });
+
+  // init DbUpdates
+  app.couch_db_updates = new EventEmitter();
+
+  Pouch.on('created', function (dbName) {
+    app.couch_db_updates.emit('update', {db_name: dbName, type: 'created'});
+  });
+
+  Pouch.on('destroyed', function (dbName) {
+    app.couch_db_updates.emit('update', {db_name: dbName, type: 'deleted'});
+  });
+
+  // ensure _users db exists
+  Pouch('_users', function (err, db) {
+    // todo: add validation fun
+    app.users_db = db;
+  });
 });
 
 // Root route, return welcome message
@@ -73,7 +157,39 @@ app.get('/', function (req, res, next) {
 });
 
 app.get('/_session', function (req, res, next) {
-  res.send({"ok":true,"userCtx":{"name":null,"roles":["_admin"]},"info":{}});
+  var header = req.header.authorization;
+  if (!header) {
+    res.send(401, {error: 'no auth header'});
+  }
+  var scramble = header.split(' ')[1];
+  var auth = base64.toByteArray(scramble).toString();
+  var userpass = auth.split(':');
+  var username = auth[0];
+  var their_pass = auth[1];
+  if (their_pass == their_pass) { // TODO: match against user doc
+    res.send({"ok":true,"userCtx":{"name":username,"roles":[username, 'confirmed']},"info":{"authentication_db":"_users","authentication_handlers":["oauth","cookie","default"],"authenticated":"cookie"}});
+  } else {
+    res.send(401, {error: 'unauthd'});
+  }
+  //res.send({"ok":true,"userCtx":{"name":null,"roles":["_admin"]},"info":{}});
+});
+
+app.post('/_session', function (req, res, next) {
+  var args = querystring.parse(req.body);
+  var username = args.name;
+  var password = args.password;
+  if (password == password) { // TODO: hash against user doc
+    res.send(JSON.stringify({'ok': true, 'name': username, roles: [username, 'confirmed']}) + '\n');
+  } else {
+    res.send(401);
+  }
+});
+
+app.all('/_db_updates', function (req, res, next) {
+  res.send(400);
+  // app.couch_db_updates.on('update', function(update) {
+  //   res.send(200, update);
+  // });
 });
 
 app.get('/_utils', function (req, res, next) {
@@ -94,6 +210,23 @@ app.get('/_all_dbs', function (req, res, next) {
     if (err) res.send(500, Pouch.UNKNOWN_ERROR);
     res.send(200, response);
   });
+});
+
+// handle _config
+app.get('/_config/:section/:key', function(req, res, next) {
+  var value = app.couch_config.get(req.params.section, req.params.key);
+  if (value) {
+    return res.send(200, value);
+  }
+  return res.send(404);
+});
+
+app.put('/_config/:section/:key', function(req, res, next) {
+  var section = req.params.section;
+  var key = req.params.key;
+  var value = req.body;
+  var previous_value = app.couch_config.set(section, key, value);
+  res.send(200, previous_value);
 });
 
 // Replicate a database
@@ -193,6 +326,7 @@ app.del('/:db', function (req, res, next) {
 app.get('/:db', function (req, res, next) {
   req.db.info(function (err, info) {
     if (err) return res.send(404, err);
+    info.instance_start_time = 12345;
     res.send(200, info);
   });
 });
@@ -214,9 +348,19 @@ app.post('/:db/_bulk_docs', function (req, res, next) {
 
 });
 
+var allowed_methods = function(methods, req) {
+  if (methods.indexOf(req.method) === -1) {
+    return false;
+  } else {
+    return true;
+  }
+};
+
 // All docs operations
 app.all('/:db/_all_docs', function (req, res, next) {
-  if (req.method !== 'GET' && req.method !== 'POST') return next();
+  if (!allowed_methods(['GET', 'HEAD', 'POST'], req)) {
+    return next();
+  }
 
   // Check that the request body, if present, is an object.
   if (!!req.body && (typeof req.body !== 'object' || Array.isArray(req.body))) {
@@ -225,6 +369,10 @@ app.all('/:db/_all_docs', function (req, res, next) {
 
   for (var prop in req.body) {
     req.query[prop] = req.query[prop] || req.body[prop];
+  }
+
+  if (req.params.db == '_users' && !req.isAdmin) {
+    return res.send(404);
   }
 
   req.db.allDocs(req.query, function (err, response) {
@@ -270,6 +418,12 @@ app.get('/:db/_changes', function (req, res, next) {
 
   req.db.changes(req.query);
 
+});
+
+// _security
+app.all('/:db/_security', function (req, res, next) {
+  // TODO: IMPLEMENT
+  res.send(200, {ok: true});
 });
 
 // DB Compaction
@@ -415,18 +569,44 @@ app.put('/:db/:id(*)', function (req, res, next) {
       ? req.params.id
       : null;
   }
-  req.db.put(req.body, req.query, function (err, response) {
-    if (err) return res.send(500, err);
-    var loc = req.protocol
-      + '://'
-      + ((req.host === '127.0.0.1') ? '' : req.subdomains.join('.') + '.')
-      + req.host
-      + '/' + req.params.db
-      + '/' + req.body._id;
-    res.location(loc);
-    res.send(201, response);
-  });
+
+  maybe_handle_users(req, function (doc) {
+    req.db.put(doc, req.query, function (err, response) {
+      if (err) return res.send(500, err);
+      app.couch_db_updates.emit('update', {db_name: req.db.db_name, type: 'update'});
+      var loc = req.protocol
+        + '://'
+        + ((req.host === '127.0.0.1') ? '' : req.subdomains.join('.') + '.')
+        + req.host
+        + '/' + req.params.db
+        + '/' + doc._id;
+      res.location(loc);
+      res.send(201, response);
+    });
+  })
 });
+
+var maybe_handle_users = function (req, callback) {
+  if (req.db.db_name == '_users') {
+    // handle users docs
+    if (req.body.password) {
+      var iterations = 10;
+      pass.iterations(iterations);
+      pwd.hash(req.body.password, function(err, salt, hash) {
+        if (err) return res.send(500, err);
+        delete req.body.password;
+        req.body.password_scheme = 'pbkdf2';
+        req.body.iterations = iterations;
+        req.body.derived_key = hash;
+        callback(req.body);
+      });
+    } else {
+      callback(req.body);
+    }
+  } else {
+    callback(req.body);
+  }
+};
 
 // Create a document
 app.post('/:db', function (req, res, next) {

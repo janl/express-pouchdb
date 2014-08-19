@@ -16,7 +16,9 @@
     "node": ">= 0.8.0"
   },
   "dependencies": {
-    "pouchdb": "*"
+    "base64-js": "0.0.6",
+    "pouchdb": "*",
+    "pwd": "0.0.3"
   },
   "devDependencies": {
     "express": "3.x"
