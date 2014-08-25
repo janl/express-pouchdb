@@ -781,12 +781,37 @@ app.put('/:db/:id(*)', jsonParser, function (req, res, next) {
   }
 });
 
+var maybe_handle_users = function (req, callback) {
+  if (req.db.db_name == '_users') {
+    // handle users docs
+    if (req.body.password) {
+      var iterations = 10;
+      pass.iterations(iterations);
+      pwd.hash(req.body.password, function(err, salt, hash) {
+        if (err) return res.send(500, err);
+        delete req.body.password;
+        req.body.password_scheme = 'pbkdf2';
+        req.body.iterations = iterations;
+        req.body.derived_key = hash;
+        callback(req.body);
+      });
+    } else {
+      callback(req.body);
+    }
+  } else {
+    callback(req.body);
+  }
+};
+
 // Create a document
 app.post('/:db', jsonParser, function (req, res, next) {
   req.body._id = uuids(1)[0];
-  req.db.put(req.body, req.query, function (err, response) {
-    if (err) return res.send(err.status || 500, err);
-    res.send(201, response);
+
+  maybe_handle_users(function(body) {
+    req.db.put(body, req.query, function (err, response) {
+      if (err) return res.send(err.status || 500, err);
+      res.send(201, response);
+    });
   });
 });
 
