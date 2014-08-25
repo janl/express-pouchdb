@@ -62,6 +62,24 @@ module.exports = function(PouchToUse) {
   Pouch.plugin(require('pouchdb-update'));
   Pouch.plugin(require('pouchdb-validation'));
   app.couch_config = CouchConfig();
+
+  // init DbUpdates
+  app.couch_db_updates = new EventEmitter();
+
+  Pouch.on('created', function (dbName) {
+    app.couch_db_updates.emit('update', {db_name: dbName, type: 'created'});
+  });
+
+  Pouch.on('destroyed', function (dbName) {
+    app.couch_db_updates.emit('update', {db_name: dbName, type: 'deleted'});
+  });
+
+  // ensure _users db exists
+  Pouch('_users', function (err, db) {
+    // todo: add validation fun
+    app.users_db = db;
+  });
+
   return app;
 };
 
@@ -219,7 +237,39 @@ app.get('/', function (req, res, next) {
 });
 
 app.get('/_session', function (req, res, next) {
-  res.send({"ok":true,"userCtx":{"name":null,"roles":["_admin"]},"info":{}});
+  var header = req.header.authorization;
+  if (!header) {
+    res.send(401, {error: 'no auth header'});
+  }
+  var scramble = header.split(' ')[1];
+  var auth = base64.toByteArray(scramble).toString();
+  var userpass = auth.split(':');
+  var username = auth[0];
+  var their_pass = auth[1];
+  if (their_pass == their_pass) { // TODO: match against user doc
+    res.send({"ok":true,"userCtx":{"name":username,"roles":[username, 'confirmed']},"info":{"authentication_db":"_users","authentication_handlers":["oauth","cookie","default"],"authenticated":"cookie"}});
+  } else {
+    res.send(401, {error: 'unauthd'});
+  }
+  //res.send({"ok":true,"userCtx":{"name":null,"roles":["_admin"]},"info":{}});
+});
+
+app.post('/_session', function (req, res, next) {
+  var args = querystring.parse(req.body);
+  var username = args.name;
+  var password = args.password;
+  if (password == password) { // TODO: hash against user doc
+    res.send(JSON.stringify({'ok': true, 'name': username, roles: [username, 'confirmed']}) + '\n');
+  } else {
+    res.send(401);
+  }
+});
+
+app.all('/_db_updates', function (req, res, next) {
+  res.send(400);
+  // app.couch_db_updates.on('update', function(update) {
+  //   res.send(200, update);
+  // });
 });
 
 app.get('/_utils', function (req, res, next) {
