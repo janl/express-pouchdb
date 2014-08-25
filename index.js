@@ -14,43 +14,43 @@ var startTime  = new Date().getTime()
   , histories  = {}
   , app        = express();
 
-  var CouchConfig = function() {
-    var file = './.config.json';
+var CouchConfig = function() {
+  var file = './.config.json';
 
-    var read_config = function() {
-      if (fs.exists(file)) {
-        return JSON.parse(fs.readFileSync(file));
-      }
-      return {};
+  var read_config = function() {
+    if (fs.exists(file)) {
+      return JSON.parse(fs.readFileSync(file));
     }
+    return {};
+  }
 
-    var flush = function() {
-      fs.writeFileSync(file, JSON.stringify(config));
-    };
-
-    var config = read_config();
-
-    return {
-      get: function(section, key) {
-        if (config[section] && config[section][key]) {
-          return config[section][key];
-        } else {
-          return undefined;
-        }
-      },
-      set: function(section, key, value) {
-        var previous_value = undefined;
-        if (!config[section]) {
-          config[section] = {};
-        } else {
-          previous_value = config[section][key];
-        }
-        config[section][key] = value;
-        flush();
-        return previous_value;
-      }
-    }
+  var flush = function() {
+    fs.writeFileSync(file, JSON.stringify(config));
   };
+
+  var config = read_config();
+
+  return {
+    get: function(section, key) {
+      if (config[section] && config[section][key]) {
+        return config[section][key];
+      } else {
+        return undefined;
+      }
+    },
+    set: function(section, key, value) {
+      var previous_value = undefined;
+      if (!config[section]) {
+        config[section] = {};
+      } else {
+        previous_value = config[section][key];
+      }
+      config[section][key] = value;
+      flush();
+      return previous_value;
+    }
+  }
+};
 
 var Pouch;
 module.exports = function(PouchToUse) {
