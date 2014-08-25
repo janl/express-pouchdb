@@ -12,7 +12,10 @@ var startTime  = new Date().getTime()
   , dbs        = {}
   , uuids      = require('./uuids')
   , histories  = {}
-  , app        = express();
+  , base64    = require('base64-js')
+  , querystring = require('querystring')
+  , app        = express()
+  , EventEmitter = require('events').EventEmitter;
 
 var CouchConfig = function() {
   var file = './.config.json';
@@ -443,6 +446,8 @@ app.get('/:db', function (req, res, next) {
   req.db.info(function (err, info) {
     if (err) return res.send(404, err);
     info.instance_start_time = startTime.toString();
+    //TODO: disk_size
+    //TODO: data_size
     res.send(200, info);
   });
 });
@@ -834,6 +839,18 @@ app.delete('/:db/:id(*)', function (req, res, next) {
   });
 });
 
+function isHTTP(url) {
+  return hasPrefix(url, 'http://');
+}
+
+function isHTTPS(url) {
+  return hasPrefix(url, 'https://');
+}
+
+function hasPrefix(haystack, needle) {
+  return haystack.substr(0, needle.length) === needle;
+}
+
 // Copy a document
 app.copy('/:db/:id', function (req, res, next) {
   var dest = req.get('Destination')
@@ -844,6 +861,13 @@ app.copy('/:db/:id', function (req, res, next) {
     return res.send(400, {
       'error': 'bad_request',
       'reason': 'Destination header is mandatory for COPY.'
+    });
+  }
+
+  if(isHTTP(dest) || isHTTPS(dest)) {
+    return res.send(400, {
+      'error': 'bad_request',
+      'reason': 'Destination URL must be relative.'
     });
   }
 
@@ -858,7 +882,7 @@ app.copy('/:db/:id', function (req, res, next) {
     doc._rev = rev;
     req.db.put(doc, function (err, response) {
       if (err) return res.send(409, err);
-      res.send(200, doc);
+      res.send(201, {'ok': true});
     });
   });
 });
