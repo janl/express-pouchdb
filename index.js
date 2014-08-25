@@ -160,6 +160,28 @@ app.use(function (req, res, next) {
   next();
 });
 
+// auth!
+app.use(function(req, res, next) {
+  req.isAdmin = false;
+  var header = req.headers.authorization;
+
+  if (!header) {
+    return next();
+  }
+
+  var scramble = header.split(' ')[1];
+  var auth = base64.toByteArray(scramble).toString();
+  var userpass = auth.split(':');
+  var user = auth[0];
+  var their_pass = auth[1];
+  var our_pass = app.couch_config.get('admins', 'admin'); // TODO: multiple admins
+  if (!their_pass == our_pass) { // TODO: TIMING ATTACK
+    return res.send(401, {error: unauthorized});
+  }
+  req.isAdmin = true;
+  next();
+});
+
 // Query design document rewrite handler
 app.use(function (req, res, next) {
   // Prefers regex over setting the first argument of app.use(), because
