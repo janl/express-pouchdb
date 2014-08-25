@@ -48,6 +48,17 @@ var CouchConfig = function() {
       config[section][key] = value;
       flush();
       return previous_value;
+    },
+    delete: function(section, key) {
+      var previous_value = undefined;
+      if (!config[section]) {
+        config[section] = {};
+      } else {
+        previous_value = config[section][key];
+      }
+      delete config[section][key];
+      flush();
+      return previous_value;
     }
   }
 };
@@ -276,18 +287,28 @@ app.get('/_utils', function (req, res, next) {
   res.sendfile(__dirname + '/fauxton/index.html');
 });
 
-// Config (stub for now)
-app.get('/_config', function (req, res, next) {
-  res.send(200, {
-    facts: { 
-        "pouchdb-server has no config": true,
-        "if you use pouchdb-server, you are awesome": true
-      }
-  });
+// handle _config
+app.get('/_config/:section/:key', function(req, res, next) {
+  var value = app.couch_config.get(req.params.section, req.params.key);
+  if (value) {
+    return res.send(200, value);
+  }
+  return res.send(404);
 });
 
-app.put('/_config/:key/:value(*)', function (req, res, next) {
-  res.send(200, {ok: true, 'pouchdb-server has no config': true});
+app.put('/_config/:section/:key', function(req, res, next) {
+  var section = req.params.section;
+  var key = req.params.key;
+  var value = req.body;
+  var previous_value = app.couch_config.set(section, key, value);
+  res.send(200, previous_value);
+});
+
+app.delete('/_config/:section/:key', function(req, res, next) {
+  var section = req.params.section;
+  var key = req.params.key;
+  var previous_value = app.couch_config.delete(section, key);
+  res.send(200, previous_value);
 });
 
 // Log (stub for now)
