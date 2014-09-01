@@ -15,56 +15,10 @@ var startTime  = new Date().getTime()
   , base64    = require('base64-js')
   , querystring = require('querystring')
   , app        = express()
+  , CouchConfig = require('./lib/couch_config')
   , EventEmitter = require('events').EventEmitter;
 
-var CouchConfig = function() {
-  var file = './.config.json';
 
-  var read_config = function() {
-    if (fs.exists(file)) {
-      return JSON.parse(fs.readFileSync(file));
-    }
-    return {};
-  }
-
-  var flush = function() {
-    fs.writeFileSync(file, JSON.stringify(config));
-  };
-
-  var config = read_config();
-
-  return {
-    get: function(section, key) {
-      if (config[section] && config[section][key]) {
-        return config[section][key];
-      } else {
-        return undefined;
-      }
-    },
-    set: function(section, key, value) {
-      var previous_value = undefined;
-      if (!config[section]) {
-        config[section] = {};
-      } else {
-        previous_value = config[section][key];
-      }
-      config[section][key] = value;
-      flush();
-      return previous_value;
-    },
-    delete: function(section, key) {
-      var previous_value = undefined;
-      if (!config[section]) {
-        config[section] = {};
-      } else {
-        previous_value = config[section][key];
-      }
-      delete config[section][key];
-      flush();
-      return previous_value;
-    }
-  }
-};
 
 var Pouch;
 module.exports = function(PouchToUse) {
@@ -89,10 +43,30 @@ module.exports = function(PouchToUse) {
   });
 
   // ensure _users db exists
-  Pouch('_users', function (err, db) {
-    // todo: add validation fun
-    app.users_db = db;
-  });
+  
+  // ensure users db exists
+  function ensure_users_db() {
+    var users_db_name = app.couch_config.get('couch_httpd_auth', 'authentication_db');
+    console.log('ensuring users db exists: %s', users_db_name)
+    Pouch(users_db_name, function (err, db) {
+      // todo: add validation fun
+      var validation_function = require('./lib/auth_db_validation_function');
+      var ddoc = {
+        _id: '_design/_auth',
+        validate_doc_update: validation_function
+      };
+
+      app.users_db = db.put(ddoc, function(error, response) {
+        if (error && error.status != 409) {
+          console.log('Cannot create built-in validation function: %s', error);
+          //TODO: throw
+        }
+      });
+    });
+  }
+  
+  ensure_users_db();
+  app.couch_config.on('couch_httpd_auth', 'authentication_db', ensure_users_db);
 
   return app;
 };
@@ -261,7 +235,8 @@ app.get('/_session', function (req, res, next) {
   var username = auth[0];
   var their_pass = auth[1];
   if (their_pass == their_pass) { // TODO: match against user doc
-    res.send({"ok":true,"userCtx":{"name":username,"roles":[username, 'confirmed']},"info":{"authentication_db":"_users","authentication_handlers":["oauth","cookie","default"],"authenticated":"cookie"}});
+    var users_db_name = app.couch_config.get('couch_httpd_auth', 'authentication_db');
+    res.send({"ok":true,"userCtx":{"name":username,"roles":[username, 'confirmed']},"info":{"authentication_db":users_db_name,"authentication_handlers":["oauth","cookie","default"],"authenticated":"cookie"}});
   } else {
     res.send(401, {error: 'unauthd'});
   }
@@ -302,9 +277,16 @@ app.get('/_config/:section/:key', function(req, res, next) {
 app.put('/_config/:section/:key', function(req, res, next) {
   var section = req.params.section;
   var key = req.params.key;
-  var value = req.body;
-  var previous_value = app.couch_config.set(section, key, value);
-  res.send(200, previous_value);
+  var value = '';
+  req.on('data', function(chunk) { value += chunk; });
+  req.on('end', function() {
+    console.log('PUT _config');
+    console.log(section);
+    console.log(key);
+    console.log(value);
+    var previous_value = app.couch_config.set(section, key, value);
+    res.send(200, previous_value);
+  });
 });
 
 app.delete('/_config/:section/:key', function(req, res, next) {
@@ -787,7 +769,8 @@ app.put('/:db/:id(*)', jsonParser, function (req, res, next) {
 });
 
 var maybe_handle_users = function (req, callback) {
-  if (req.db.db_name == '_users') {
+  var users_db_name = app.couch_config.get('couch_httpd_auth', 'authentication_db');
+  if (req.db.db_name == users_db_name) {
     // handle users docs
     if (req.body.password) {
       var iterations = 10;
